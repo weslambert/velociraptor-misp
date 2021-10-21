@@ -1,0 +1,57 @@
+name: Custom.Server.Enrichment.MISP
+description: |
+  Search for an indicator within MISP and return a row for each match.
+  
+  MISP:
+  
+  "A threat intelligence platform for gathering, sharing, storing and correlating Indicators of Compromise of targeted attacks, threat intelligence, nancial fraud information, vulnerability information or even counter-terrorism information."
+  
+  https://www.misp-project.org/
+ 
+  This is a rather simple artifact that can be called from within another artifact to enrich the data made available by that artifact.
+  
+  Ex.
+  
+    `SELECT * from Artifact.Server.Enrichment.MISP(Indicator=$YOURINDICATOR)`
+ 
+type: SERVER
+
+author: Wes Lambert - @therealwlambert
+
+parameters:
+  - name: Indicator
+    default: ''
+  - name: MISPURL
+    default: ''
+  - name: MISPKey
+    default: ''
+  - name: DisableSSLVerify
+    type: bool
+    default: true
+
+sources:
+  - query: |
+      LET misp_key = if(
+           condition=MISPKey,
+           then=MISPKey,
+           else=server_metadata().MISPKey)
+      LET URL <= if(
+                condition=MISPURL,
+            then=MISPURL,
+            else=server_metadata().MISPURL)
+      LET RestPath <= '/attributes/restSearch/json'
+      LET Data = SELECT parse_json(data=Content).response.Attribute AS Content from http_client(url=URL + RestPath, headers=dict(`Authorization`=misp_key, `Content-Type`="application/json"), data=dict(`value`=Indicator), method='POST', disable_ssl_security=True)
+      SELECT * FROM foreach (
+        row=Data,
+        query={
+          SELECT 
+            get(member="Event.id") AS EventId,
+            get(member="Event.info") AS Info,
+            get(member="category") AS Category,
+            get(member="first_seen") AS FirstSeen,
+            get(member="last_seen") AS LastSeen,
+            URL + '/events/view/' + get(member="Event.id") AS Link,
+            Content AS _Content
+          FROM Content     
+        }
+      )
