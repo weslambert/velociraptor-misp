@@ -1,0 +1,52 @@
+name: Custom.Intel.MISP.Upload
+description: |
+        This server artifact should be used in conjunction with the Intel.MISP client monitoring artifact(s). It is used to grab the latest list of indicators from MISP so they can be used for realtime monitoring of hosts.
+
+        The server metadata store can be used to store the value for MISPKey so that it is not stored inside of the artifact itself.
+        
+type: SERVER_EVENT
+author: Wes Lambert - @therealwlambert
+tools:
+  - name: MISPTest
+parameters:
+  - name: MISPURL
+    default: https://MISP
+  - name: MISPKey
+    default: ''
+  - name: IndicatorsName
+    description: Name of indicator filename
+    default: indicators
+  - name: IndicatorInterval
+    type: int
+    description: Interval between indicator list retrieval (default is 1 hr)
+    default: "3600"
+
+sources:
+      - query: |
+                LET misp_key = if(
+                  condition=MISPKey,
+                  then=MISPKey,
+                  else=server_metadata().MISPKey)
+             
+                LET Data = SELECT Content FROM http_client(
+                data=serialize(item=dict(
+                    returnFormat='csv',
+                    requested_attributes=array(a1='event_id',a2='category',a3='value'),
+                    format="json")),
+                    headers=dict(`Authorization`=misp_key, `Content-type`='application/json', `Accept`='application/json'),
+                    disable_ssl_security=True,
+                    method="POST", 
+                    url=MISPURL + '/attributes/restSearch')
+             
+                LET VRPath = SELECT regex_replace(re='''^[/?]*''', replace="", source=dirname(path=file_store(path="/public/x"))) AS Path FROM scope()  
+                
+                LET UploadIndicators = SELECT upload_directory(
+                    accessor='data', 
+                    file=Data.Content[0], 
+                    name=IndicatorsName, 
+                    output=VRPath.Path) 
+                AS IntelUploadDetails 
+                FROM scope()
+                
+                SELECT * FROM foreach(row={SELECT * FROM clock(period=IndicatorInterval)}, query=UploadIndicators)
+                
