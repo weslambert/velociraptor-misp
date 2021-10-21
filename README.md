@@ -1,6 +1,8 @@
 # velociraptor-misp
 Artifacts for integrating MISP with Velociraptor
 
+NOT intended for use in production at this time -- this needs more testing :)
+
 ### Intel.MISP.Upload
 Pull down threat intel from MISP and store it for Velociraptor clients to grab.
 
