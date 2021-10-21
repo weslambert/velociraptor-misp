@@ -1,0 +1,165 @@
+name: Custom.Intel.MISP.Client.Process
+description: |
+      This client event artifact will monitor for DNS queries, communication from/to IP addresses, and file hashes on a host in real-time.  Indicators are downloaded by the server at a configurable interval, then are accessible by the clients in the /public directory.  
+      
+      The artifact uses the following backend services to obtain this information:
+      
+        - DNS: DNS ETW Provider (`{1C95126E-7EEA-49A9-A3FE-A378B03DDB4D}`)
+        - IP: TCP/IP ETW Provider (`{2F07E2EE-15DB-40F1-90EF-9D7BA282188A}`)
+        - Hash: Usn Journal
+      
+type: CLIENT_EVENT
+tools:
+  - name: MISPTest
+parameters:
+  - name: PathRegex
+    description: A regex to match the entire path (you can watch a directory or a file type).
+    default: .txt$
+
+  - name: Device
+    description: The NTFS drive to watch
+    default: C:\\
+
+  - name: UsnCheckPeriod
+    type: int
+    description: Dedup all file operations that occur within this period
+    default: "10"
+  
+  - name: EtwCheckPeriod
+    type: int
+    description: Dedup all file operations that occur within this period
+    default: "10"
+    
+  - name: IntelCheckPeriod
+    type: int
+    description: Number of seconds to wait before updating intel
+    default: "30"
+
+  - name: ConnStateFilter
+    description: Filter used for TCP/IP provider connection state (ex. Established, Close_Wait, Time_Wait, etc)
+    default: 'Established|Wait'
+    
+  - name: RemoteAddressFilter
+    description: Filter used for TCP/IP provider remote addresses -- use this to exclude local addresses or allow-listed address
+    default: '127.0.0.1|0.0.0.0|192.168.1'
+ 
+sources:
+    - name: GetIntel
+      query: |
+            LET CSVURL <= SELECT Tool_MISPTest_URL AS CSVURL FROM scope()
+            LET DLDir <= SELECT dirname(path=config.tempdir_windows) AS TD FROM scope() 
+            SELECT * FROM foreach(
+                row={
+                        SELECT * FROM clock(period=IntelCheckPeriod)}, 
+                query= {
+                        SELECT copy(accessor="data", filename=Content, dest=DLDir.TD[0] + "/" + Tool_MISPTest_FILENAME) AS FullPath 
+                        FROM http_client(url=CSVURL[0].CSVURL)})
+    - name: IPFind
+      query: |
+            //SELECT config.server_urls[0] + '/public/' + CSVName FROM scope()
+            LET DLDir <= SELECT dirname(path=config.tempdir_windows) AS TD FROM scope()
+            LET CSVPath <= SELECT DLDir.TD[0] + "/" + Tool_MISPTest_FILENAME AS FullPath FROM scope()
+            LET Connections = SELECT *, split(string=EventData.RemoteAddress, sep=':')[0] AS RemoteIP,
+                         split(string=EventData.RemoteAddress, sep=':')[1] AS RemotePort,
+                         split(string=EventData.LocalAddress, sep=':')[0] AS LocalIP,
+                         split(string=EventData.LocalAddress, sep=':')[1] AS LocalPort,
+                         EventData.Status AS Status,
+                         int(int=EventData.Pid) AS PID
+                  // Watch TCPIP Provider
+                  FROM watch_etw(guid="{2F07E2EE-15DB-40F1-90EF-9D7BA282188A}") WHERE EventData.RemoteAddress AND NOT EventData.RemoteAddress =~ RemoteAddressFilter AND NOT EventData.Pid =~ '0'
+            LET DedupedConnections = SELECT * FROM foreach(row={
+                SELECT * FROM clock(period=EtwCheckPeriod)
+                    },
+                    query={
+                        -- Each time the fifo is accessed we pull all the rows and
+                        -- dedup the path, then clear the cache.
+                        SELECT * FROM fifo(
+                            query=Connections,
+                            max_rows=5000,
+                            max_age=6000, flush=TRUE)
+                        GROUP BY RemotePort,RemoteIP, PID
+                    })
+            SELECT * FROM foreach(row=DedupedConnections, 
+                query={     
+                            SELECT event_id AS EventID,
+                              category AS Category,
+                              value AS Indicator,
+                            { SELECT RemotePort FROM scope()} AS RemotePort, 
+                            { SELECT LocalPort FROM scope()} AS LocalPort,
+                            { SELECT PID FROM scope()} AS PID,
+                            if(condition=PID, then={ SELECT Name FROM pslist(pid=PID)})[0].Name AS ProcessName
+                            FROM parse_csv(filename=CSVPath.FullPath)
+                            WHERE value=RemoteIP
+                        })
+        
+    - name: DomainFind
+      query: |
+            LET DLDir <= SELECT dirname(path=config.tempdir_windows) AS TD FROM scope()
+            LET CSVPath <= SELECT DLDir.TD[0] + "/" + Tool_MISPTest_FILENAME AS FullPath FROM scope()
+            LET Domain = SELECT *, System.TimeStamp AS Timestamp,
+               EventData.QueryName AS QueryName,
+               System.ProcessID AS PID,
+               { SELECT Name FROM pslist(pid=System.ProcessID)} AS ProcessName
+            FROM watch_etw(guid="{1C95126E-7EEA-49A9-A3FE-A378B03DDB4D}")
+            WHERE System.ID = 3006
+
+            LET DedupedDomains = SELECT * FROM foreach(row={
+                SELECT * FROM clock(period=EtwCheckPeriod)
+            },
+            query={
+                -- Each time the fifo is accessed we pull all the rows and
+                -- dedup the path, then clear the cache.
+                SELECT * FROM fifo(
+                    query=Domain,
+                    max_rows=5000,
+                    max_age=6000, flush=TRUE)
+                GROUP BY QueryName
+            })
+            LET DomainFind = SELECT event_id AS EventID,
+                              category AS Category,
+                              value AS Indicator, 
+                             { SELECT QueryName FROM scope()} AS QueryName,
+                             { SELECT split(sep='\\.', string=QueryName)[-2] + '.' + split(sep='\\.', string=QueryName)[-1] FROM scope()} AS DomainName,
+                             { SELECT PID FROM scope()} AS PID, 
+                             { SELECT ProcessName FROM scope()} AS ProcessName
+                             FROM parse_csv(filename=CSVPath.FullPath) WHERE value =~ DomainName
+            SELECT * FROM foreach(row=DedupedDomains,query=DomainFind)
+            
+    - name: HashFind
+      query: |
+            LET DLDir <= SELECT dirname(path=config.tempdir_windows) AS TD FROM scope()
+            LET CSVPath <= SELECT DLDir.TD[0] + "/" + Tool_MISPTest_FILENAME AS FullPath FROM scope()
+            LET LogThis <= log(message="Monitoring " + Device + PathRegex)
+         
+            LET file_modifications = SELECT Device + FullPath AS FullPath
+            FROM watch_usn(device=Device)
+            WHERE FullPath =~ PathRegex
+
+        
+            LET DedupedFiles = SELECT * FROM foreach(row={
+                SELECT * FROM clock(period=UsnCheckPeriod)
+            },
+            query={
+                SELECT * FROM fifo(
+                    query=file_modifications,
+                    max_rows=5000,
+                    max_age=6000, flush=TRUE)
+                GROUP BY FullPath
+            })
+            
+            LET Files = SELECT * FROM foreach(row=DedupedFiles,
+                query={
+                    SELECT FullPath, Size, hash(path=FullPath).MD5 AS MD5Hash, hash(path=FullPath).SHA1 AS SHA1Hash, hash(path=FullPath).SHA256 AS SHA256Hash, now() AS Time
+                    FROM stat(filename=FullPath)
+                    WHERE Mode.IsRegular
+                }, workers=1)
+     
+            Let HashFilter = MD5Hash + '|' + SHA1Hash + '|' + SHA256Hash
+            LET HashFind =  SELECT event_id AS EventID,
+                              category AS Category,
+                              value AS Indicator, 
+                            { SELECT FullPath FROM scope()} AS FullPath,
+                            { SELECT * FROM glob(globs=FullPath)} AS Details
+                            FROM parse_csv(filename=CSVPath.FullPath) 
+                            WHERE value =~ HashFilter
+            SELECT * FROM foreach(row=Files, query=HashFind)
