@@ -5,7 +5,7 @@ Artifacts for integrating MISP with Velociraptor
 Pull down threat intel from MISP and store it for Velociraptor clients to grab.
 
 ### Intel.MISP.Client.Process
-Monitor DNS, TCP/IP, and USN, pulls down intel from server and checks to see if values match indicators from MISP.
+Monitor DNS and TCP/IP ETW providers, as well as USN. Pulls down intel from server and checks to see if values match indicators from MISP.
 
 ### Server.Enrichment.MISP
 Look up MISP events from an indicator.
