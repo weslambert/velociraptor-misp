@@ -13,4 +13,6 @@ Look up MISP events from an indicator.
 ### TBD
 Other artifacts are in progress to move the matching from the client to the server if users are concerned with distributing intel to the client.
 
+Additionally, CSV-formatted indicators may be moved to sqlite.
+
 After enough testing, I will submit these artifacts to the Velociraptor Artifact Exchange to make them easier to leverage.
