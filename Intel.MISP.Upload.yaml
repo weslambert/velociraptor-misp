@@ -6,8 +6,6 @@ description: |
         
 type: SERVER_EVENT
 author: Wes Lambert - @therealwlambert
-tools:
-  - name: MISPTest
 parameters:
   - name: MISPURL
     default: https://MISP
@@ -48,5 +46,7 @@ sources:
                 AS IntelUploadDetails 
                 FROM scope()
                 
-                SELECT * FROM foreach(row={SELECT * FROM clock(period=IndicatorInterval)}, query=UploadIndicators)
-                
+                SELECT * FROM chain(
+                  a={SELECT * FROM UploadIndicators},           
+                  b={SELECT * FROM foreach(row={SELECT * FROM clock(period=IndicatorInterval)}, query=UploadIndicators)}
+                )
