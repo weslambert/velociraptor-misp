@@ -34,13 +34,14 @@ sources:
                     headers=dict(`Authorization`=misp_key, `Content-type`='application/json', `Accept`='application/json'),
                     disable_ssl_security=True,
                     method="POST", 
-                    url=MISPURL + '/attributes/restSearch')
+                    url=MISPURL + '/attributes/restSearch',
+                    tempfile_extension=".csv")
              
                 LET VRPath = SELECT regex_replace(re='''^[/?]*''', replace="", source=dirname(path=file_store(path="/public/x"))) AS Path FROM scope()  
                 
                 LET UploadIndicators = SELECT upload_directory(
-                    accessor='data', 
-                    file=Data.Content[0], 
+                    accessor='file', 
+                    file=Data.Content, 
                     name=IndicatorsName, 
                     output=VRPath.Path) 
                 AS IntelUploadDetails 
