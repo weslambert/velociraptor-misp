@@ -9,8 +9,13 @@ author: Wes Lambert - @therealwlambert
 parameters:
   - name: MISPURL
     default: https://MISP
+    description: MISP Server URL
   - name: MISPKey
     default: ''
+    description: MISP API Key
+  - name: MISPMaxDays
+    default: '90d'
+    description: "Export indicators for the specified period [dmh] (default is 90d)"
   - name: IndicatorsName
     description: Name of indicator filename
     default: indicators
@@ -21,14 +26,23 @@ parameters:
 
 sources:
       - query: |
-                LET misp_key = if(
-                  condition=MISPKey,
-                  then=MISPKey,
-                  else=server_metadata().MISPKey)
+                LET misp_key = if (
+                    condition=MISPKey,
+                    then=MISPKey,
+                    else=server_metadata().MISPKey)
+                  
+                LET misp_days = if (
+                    condition = MISPMaxDays,
+                    then=MISPMaxDays,
+                    else = server_metadata().MISPMaxDays)
              
                 LET Data = SELECT Content FROM http_client(
                 data=serialize(item=dict(
                     returnFormat='csv',
+                    last=misp_days,
+                    enforceWarninglist=True,
+                    to_ids=True,
+                    category='Network activity',
                     requested_attributes=array(a1='event_id',a2='category',a3='value'),
                     format="json")),
                     headers=dict(`Authorization`=misp_key, `Content-type`='application/json', `Accept`='application/json'),
@@ -48,6 +62,7 @@ sources:
                 FROM scope()
                 
                 SELECT * FROM chain(
-                  a={SELECT * FROM UploadIndicators},           
-                  b={SELECT * FROM foreach(row={SELECT * FROM clock(period=IndicatorInterval)}, query=UploadIndicators)}
-                )
+                    a={SELECT * FROM UploadIndicators},
+                    b={SELECT * FROM foreach(row={SELECT * FROM clock(period=IndicatorInterval)}, query=UploadIndicators)}
+                    )
+                
