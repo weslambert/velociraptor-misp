@@ -7,6 +7,10 @@ description: |
         - DNS: DNS ETW Provider (`{1C95126E-7EEA-49A9-A3FE-A378B03DDB4D}`)
         - IP: TCP/IP ETW Provider (`{2F07E2EE-15DB-40F1-90EF-9D7BA282188A}`)
         - Hash: Usn Journal
+        
+      Todo:
+      
+        - Optimize IndicatorsPath & IndicatorsFiles to use environment variables or server config.
       
 type: CLIENT_EVENT
 tools:
@@ -14,11 +18,11 @@ tools:
 parameters:
   - name: PathRegex
     description: A regex to match the entire path (you can watch a directory or a file type).
-    default: .txt$
+    default: Users/.*/.*
 
   - name: Device
     description: The NTFS drive to watch
-    default: C:\\
+    default: C:/
 
   - name: UsnCheckPeriod
     type: int
@@ -33,7 +37,15 @@ parameters:
   - name: IntelCheckPeriod
     type: int
     description: Number of seconds to wait before updating intel
-    default: "30"
+    default: "3600"
+    
+  - name: IndicatorsFile
+    description: Name of the indicators file
+    default: "C:\\Program\ Files\\Velociraptor\\Tools\\indicators"
+    
+  - name: IndicatorsPath
+    description: Location of the indicators file
+    default: "C:\\Program\ Files\\Velociraptor\\Tools"
 
   - name: ConnStateFilter
     description: Filter used for TCP/IP provider connection state (ex. Established, Close_Wait, Time_Wait, etc)
@@ -47,18 +59,23 @@ sources:
     - name: GetIntel
       query: |
             LET CSVURL <= SELECT Tool_MISPTest_URL AS CSVURL FROM scope()
-            LET DLDir <= SELECT dirname(path=config.tempdir_windows) AS TD FROM scope() 
-            SELECT * FROM foreach(
-                row={
-                        SELECT * FROM clock(period=IntelCheckPeriod)}, 
-                query= {
-                        SELECT copy(accessor="data", filename=Content, dest=DLDir.TD[0] + "/" + Tool_MISPTest_FILENAME) AS FullPath 
-                        FROM http_client(url=CSVURL[0].CSVURL)})
+            LET Data = SELECT Content FROM http_client(url=CSVURL[0].CSVURL,
+                tempfile_extension=".csv")
+            LET SaveIndicators = SELECT upload_directory(
+                accessor='file', 
+                file=Data.Content, 
+                name=IndicatorsFile,
+                output=IndicatorsPath) 
+                AS IntelUploadDetails 
+                FROM scope()
+                
+            SELECT * FROM chain(
+                a={SELECT * FROM SaveIndicators},           
+                b={SELECT * FROM foreach(row={SELECT * FROM clock(period=IntelCheckPeriod)}, query=SaveIndicators)}
+            )
+
     - name: IPFind
       query: |
-            //SELECT config.server_urls[0] + '/public/' + CSVName FROM scope()
-            LET DLDir <= SELECT dirname(path=config.tempdir_windows) AS TD FROM scope()
-            LET CSVPath <= SELECT DLDir.TD[0] + "/" + Tool_MISPTest_FILENAME AS FullPath FROM scope()
             LET Connections = SELECT *, split(string=EventData.RemoteAddress, sep=':')[0] AS RemoteIP,
                          split(string=EventData.RemoteAddress, sep=':')[1] AS RemotePort,
                          split(string=EventData.LocalAddress, sep=':')[0] AS LocalIP,
@@ -88,21 +105,19 @@ sources:
                             { SELECT LocalPort FROM scope()} AS LocalPort,
                             { SELECT PID FROM scope()} AS PID,
                             if(condition=PID, then={ SELECT Name FROM pslist(pid=PID)})[0].Name AS ProcessName
-                            FROM parse_csv(filename=CSVPath.FullPath)
+                            FROM parse_csv(filename=IndicatorsPath + "\\" + IndicatorsFile)
                             WHERE value=RemoteIP
                         })
         
     - name: DomainFind
       query: |
-            LET DLDir <= SELECT dirname(path=config.tempdir_windows) AS TD FROM scope()
-            LET CSVPath <= SELECT DLDir.TD[0] + "/" + Tool_MISPTest_FILENAME AS FullPath FROM scope()
             LET Domain = SELECT *, System.TimeStamp AS Timestamp,
                EventData.QueryName AS QueryName,
                System.ProcessID AS PID,
                { SELECT Name FROM pslist(pid=System.ProcessID)} AS ProcessName
             FROM watch_etw(guid="{1C95126E-7EEA-49A9-A3FE-A378B03DDB4D}")
-            WHERE System.ID = 3006
-
+            WHERE System.ID = 3020
+            
             LET DedupedDomains = SELECT * FROM foreach(row={
                 SELECT * FROM clock(period=EtwCheckPeriod)
             },
@@ -119,10 +134,9 @@ sources:
                               category AS Category,
                               value AS Indicator, 
                              { SELECT QueryName FROM scope()} AS QueryName,
-                             { SELECT split(sep='\\.', string=QueryName)[-2] + '.' + split(sep='\\.', string=QueryName)[-1] FROM scope()} AS DomainName,
                              { SELECT PID FROM scope()} AS PID, 
                              { SELECT ProcessName FROM scope()} AS ProcessName
-                             FROM parse_csv(filename=CSVPath.FullPath) WHERE value =~ DomainName
+                             FROM parse_csv(filename=IndicatorsPath + "\\" + IndicatorsFile) WHERE value = QueryName
             SELECT * FROM foreach(row=DedupedDomains,query=DomainFind)
             
     - name: HashFind
@@ -160,6 +174,6 @@ sources:
                               value AS Indicator, 
                             { SELECT FullPath FROM scope()} AS FullPath,
                             { SELECT * FROM glob(globs=FullPath)} AS Details
-                            FROM parse_csv(filename=CSVPath.FullPath) 
+                            FROM parse_csv(filename=IndicatorsPath + "\\" + IndicatorsFile) 
                             WHERE value =~ HashFilter
             SELECT * FROM foreach(row=Files, query=HashFind)
