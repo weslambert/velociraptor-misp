@@ -48,12 +48,11 @@ sources:
       query: |
             LET CSVURL <= SELECT Tool_MISPTest_URL AS CSVURL FROM scope()
             LET DLDir <= SELECT dirname(path=config.tempdir_windows) AS TD FROM scope() 
-            SELECT * FROM foreach(
-                row={
-                        SELECT * FROM clock(period=IntelCheckPeriod)}, 
-                query= {
-                        SELECT copy(accessor="data", filename=Content, dest=DLDir.TD[0] + "/" + Tool_MISPTest_FILENAME) AS FullPath 
-                        FROM http_client(url=CSVURL[0].CSVURL)})
+            LET DownloadIndicators = SELECT copy(accessor="file", filename=Content, dest=DLDir.TD[0] + "/" + Tool_MISPTest_FILENAME) AS FullPath 
+                        FROM http_client(url=CSVURL[0].CSVURL,tempfile_extension=".csv")
+            SELECT * FROM chain(
+                  a={SELECT * FROM DownloadIndicators},
+                  b={SELECT * FROM foreach(row={SELECT * FROM clock(period=IntelCheckPeriod)}, query=DownloadIndicators)})
     - name: IPFind
       query: |
             //SELECT config.server_urls[0] + '/public/' + CSVName FROM scope()
